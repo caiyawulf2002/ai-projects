@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+.env
+*.env
+
+# Jupyter
+.ipynb_checkpoints/
+
+# GCP credentials — NEVER commit these
+*.json
+service-account*.json
+application_default_credentials.json
+
+# Local DBs
+*.db
+*.sqlite
+
+# Docker
+.dockerignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Model artifacts (large files go in GCS, not git)
+*.pkl
+*.joblib
+*.h5
+*.pt
+*.pth
+models/
+artifacts/

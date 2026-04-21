@@ -1,0 +1,10 @@
+[server]
+headless = true
+port = 8080
+
+[browser]
+serverAddress = "localhost"
+serverPort = 8080
+
+[client]
+toolbarMode = "minimal"
