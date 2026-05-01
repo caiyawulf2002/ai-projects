@@ -15,30 +15,57 @@ tested on AAPL 10-K, XGBoost not yet trained" is a status.
 
 ## P1 — Personal Learning Tutor
 
-**Status:** 🔴 NOT STARTED
+**Status:** 🟡 IN PROGRESS — core feature layer complete, not yet deployed
 **Ships:** Week 4
+**Branch:** `feature/pydantic-output-parsers` (commit f42d8be)
 **Deploy target:** GCP Cloud Run
 
 ```
-Local:   not running
-Docker:  no image built
+Local:   runnable — streamlit run p1-personal-tutor/app.py (set OPENAI_API_KEY)
+Docker:  Dockerfile present, image not yet built
 GCP:     not deployed
-GitHub:  no README
+GitHub:  README present
 ```
 
 **What's built:**
-- nothing yet
+
+| Component | File | Status |
+|---|---|---|
+| Streamlit chat app + page router | `app.py` | ✅ |
+| Session memory (summary-buffer hybrid) | `memory/memory_manager.py` | ✅ |
+| Tutor system prompt (VARK intake, syllabus, Socratic pedagogy) | `config/prompts.py` | ✅ |
+| QuizResult Pydantic model | `models/quiz_models.py` | ✅ |
+| UserProfile Pydantic model (global defaults) | `models/user_profile.py` | ✅ |
+| TopicStyle + StyleSignal models (per-topic inference) | `models/style_models.py` | ✅ |
+| ScoreTracker — SQLite quiz results | `db/score_tracker.py` | ✅ |
+| ProfileStore — SQLite profile + topic_styles (with migration) | `db/profile_store.py` | ✅ |
+| Quiz scoring chain (PydanticOutputParser + OutputFixingParser) | `chains/quiz_chain.py` | ✅ |
+| Style inference chain (runs every 3 turns, updates per-topic style) | `chains/style_inference_chain.py` | ✅ |
+| Adaptive prompt builder (global + per-topic style resolution) | `config/adaptive_prompt.py` | ✅ |
+| Feature notes doc | `FEATURE_NOTES.md` | ✅ |
+| LangSmith tracing | not wired yet | 🔴 |
+| GCP Secret Manager for OPENAI_API_KEY | not wired yet | 🔴 |
+| Cloud Run deployment | not configured | 🔴 |
 
 **What's broken / blocked:**
-- n/a
+- OPENAI_API_KEY must be in p1-personal-tutor/.env to run locally
+- LangSmith tracing not wired (LANGCHAIN_TRACING_V2 / LANGCHAIN_API_KEY not set)
+- `langchain-classic` package required for OutputFixingParser — already in venv,
+  ensure it's installed before Docker build
 
 **Last session notes:**
-- n/a
+- 2026-04-30: full feature layer built and committed on feature/pydantic-output-parsers
+- OutputFixingParser lives in langchain_classic (not langchain) in v1.x stack
+- topic_styles stored as JSON TEXT in user_profile table; ALTER TABLE migration
+  handles existing databases on first boot
+- Style inference fires every 3 turns silently — failure never breaks chat
 
 **Next steps:**
-- Set up LangChain env + Streamlit skeleton
-- Build basic chat chain (GPT-4o via API)
-- Get running locally end-to-end
+1. Merge feature/pydantic-output-parsers → main
+2. Wire LangSmith: LANGCHAIN_TRACING_V2=true, LANGCHAIN_PROJECT="p1-personal-tutor"
+3. Docker build + test locally
+4. GCP: create project, Artifact Registry repo, push image, deploy Cloud Run
+5. Wire OPENAI_API_KEY via Secret Manager (not .env) for prod
 
 ---
 
@@ -177,8 +204,54 @@ See `.claude/skills/gcp-context.md` for full infra details.
 
 ---
 
+## personal-os — Persistent learning layer
+
+**Status:** 🟡 IN PROGRESS
+**Entry point:** `python personal-os/cli/app.py`
+**DB:** `personal-os/data/tutor.db` (gitignored via root `*.db` rule)
+**Session reports:** `personal-os/session_reports/`
+
+```
+Local:  runnable once deps installed (pip install -r personal-os/requirements.txt)
+GCP:    not deployed — fully local by design
+GitHub: no README yet (doc agent will generate)
+```
+
+**Components:**
+
+| Component | File | Status |
+|-----------|------|--------|
+| SQLite helpers + report writer | `core/db.py` | ✅ Written |
+| Tutor tools (explain/scaffold/hint/check/log_gap) | `agents/tutor/tools.py` | ✅ Written |
+| Tutor LCEL chains + VARK intake | `agents/tutor/chains.py` | ✅ Written |
+| Tutor AgentExecutor | `agents/tutor/agent.py` | ✅ Written |
+| Tester tools (scenarios/run/counterfactual/report) | `agents/tester/tools.py` | ✅ Written |
+| Tester AgentExecutor | `agents/tester/agent.py` | ✅ Written |
+| Textual terminal UI | `cli/app.py` | ✅ Written |
+| Session reports index | `session_reports/INDEX.md` | auto-generated at first session close |
+| Google Calendar MCP integration | `cli/app.py` line with `# SWAP:` | 🔴 Not yet |
+
+**What's blocked:**
+- Deps not installed yet — run `pip install -r personal-os/requirements.txt`
+- Google Calendar MCP not wired (stub event used until then)
+- `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `LANGCHAIN_API_KEY` must be set
+
+**Last session notes:**
+- 2026-04-28: full personal-os scaffold written in one session
+- session_initializer.py was already at .claude/scripts/ — no move needed
+- sys.path insert pattern used to import from .claude/scripts/
+
+**Next steps:**
+1. `pip install -r personal-os/requirements.txt`
+2. Set env vars and run smoke test: `python personal-os/cli/app.py`
+3. Complete VARK intake on first run to populate learner profile
+4. Wire Google Calendar MCP when ready (see `# SWAP:` comment in cli/app.py)
+
+---
+
 ## Session log
 
 | Date | Projects touched | What was done | Who |
 |------|-----------------|---------------|-----|
+| 2026-04-28 | personal-os | Full personal-os scaffold: db, tutor agent, tester agent, Textual CLI | Claude |
 | —    | —               | Repo initialized | Caiya |
