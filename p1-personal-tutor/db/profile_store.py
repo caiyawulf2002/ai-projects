@@ -1,0 +1,174 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+from pathlib import Path
+
+from models.style_models import StyleSignal, TopicStyle
+from models.user_profile import UserProfile
+
+_DB_PATH = Path(__file__).parent.parent / "data" / "tutor.db"
+
+# After this many observations, confidence reaches 1.0.
+_CONFIDENCE_SATURATION = 5
+
+
+def _get_conn() -> sqlite3.Connection:
+    _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _normalise_topic(topic: str) -> str:
+    return topic.lower().strip()
+
+
+class ProfileStore:
+    """Single-row SQLite store for the learner's UserProfile."""
+
+    def __init__(self) -> None:
+        self._init_table()
+
+    def _init_table(self) -> None:
+        with _get_conn() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_profile (
+                    id                INTEGER PRIMARY KEY CHECK (id = 1),
+                    learning_style    TEXT NOT NULL,
+                    preferred_pace    TEXT NOT NULL,
+                    explanation_style TEXT NOT NULL,
+                    weak_topics       TEXT NOT NULL,
+                    strong_topics     TEXT NOT NULL,
+                    topic_styles      TEXT NOT NULL DEFAULT '{}'
+                )
+                """
+            )
+            # Idempotent migration: add topic_styles to existing databases.
+            try:
+                conn.execute(
+                    "ALTER TABLE user_profile ADD COLUMN topic_styles TEXT NOT NULL DEFAULT '{}'"
+                )
+            except sqlite3.OperationalError:
+                pass  # column already exists
+
+    # ── persistence ────────────────────────────────────────────────────────────
+
+    def save(self, profile: UserProfile) -> None:
+        serialised_topic_styles = json.dumps(
+            {
+                topic: ts.model_dump()
+                for topic, ts in profile.topic_styles.items()
+            }
+        )
+        with _get_conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO user_profile
+                    (id, learning_style, preferred_pace, explanation_style,
+                     weak_topics, strong_topics, topic_styles)
+                VALUES (1, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    learning_style    = excluded.learning_style,
+                    preferred_pace    = excluded.preferred_pace,
+                    explanation_style = excluded.explanation_style,
+                    weak_topics       = excluded.weak_topics,
+                    strong_topics     = excluded.strong_topics,
+                    topic_styles      = excluded.topic_styles
+                """,
+                (
+                    profile.learning_style,
+                    profile.preferred_pace,
+                    profile.explanation_style,
+                    json.dumps(profile.weak_topics),
+                    json.dumps(profile.strong_topics),
+                    serialised_topic_styles,
+                ),
+            )
+
+    def load(self) -> UserProfile | None:
+        with _get_conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM user_profile WHERE id = 1"
+            ).fetchone()
+        if row is None:
+            return None
+
+        raw_topic_styles: dict = json.loads(row["topic_styles"] or "{}")
+        topic_styles = {
+            topic: TopicStyle.model_validate(data)
+            for topic, data in raw_topic_styles.items()
+        }
+
+        return UserProfile(
+            learning_style=row["learning_style"],
+            preferred_pace=row["preferred_pace"],
+            explanation_style=row["explanation_style"],
+            weak_topics=json.loads(row["weak_topics"]),
+            strong_topics=json.loads(row["strong_topics"]),
+            topic_styles=topic_styles,
+        )
+
+    # ── quiz result helpers (unchanged) ───────────────────────────────────────
+
+    def add_weak_topic(self, topic: str) -> None:
+        """Idempotently add a topic to weak_topics."""
+        profile = self.load()
+        if profile is None:
+            return
+        if topic not in profile.weak_topics:
+            profile.weak_topics.append(topic)
+        profile.strong_topics = [t for t in profile.strong_topics if t != topic]
+        self.save(profile)
+
+    def add_strong_topic(self, topic: str) -> None:
+        """Idempotently add a topic to strong_topics and remove from weak."""
+        profile = self.load()
+        if profile is None:
+            return
+        if topic not in profile.strong_topics:
+            profile.strong_topics.append(topic)
+        profile.weak_topics = [t for t in profile.weak_topics if t != topic]
+        self.save(profile)
+
+    # ── dynamic style inference helpers ───────────────────────────────────────
+
+    def update_topic_style(self, topic: str, signal: StyleSignal) -> None:
+        """Merge a StyleSignal into the stored TopicStyle for the given topic.
+
+        Only non-None inferred fields in the signal overwrite the stored
+        value, so a signal that only detected pace preference won't clear a
+        previously inferred explanation style.
+
+        Confidence grows linearly with sample_count up to _CONFIDENCE_SATURATION
+        observations, after which it saturates at 1.0.
+        """
+        profile = self.load()
+        if profile is None:
+            return
+
+        key = _normalise_topic(topic)
+        existing = profile.topic_styles.get(key, TopicStyle())
+
+        if signal.inferred_learning_style is not None:
+            existing.learning_style = signal.inferred_learning_style
+        if signal.inferred_pace is not None:
+            existing.preferred_pace = signal.inferred_pace
+        if signal.inferred_explanation_style is not None:
+            existing.explanation_style = signal.inferred_explanation_style
+
+        existing.sample_count += 1
+        existing.confidence = min(
+            existing.sample_count / _CONFIDENCE_SATURATION, 1.0
+        )
+
+        profile.topic_styles[key] = existing
+        self.save(profile)
+
+    def get_topic_style(self, topic: str) -> TopicStyle | None:
+        """Return the stored TopicStyle for a topic, or None if unseen."""
+        profile = self.load()
+        if profile is None:
+            return None
+        return profile.topic_styles.get(_normalise_topic(topic))

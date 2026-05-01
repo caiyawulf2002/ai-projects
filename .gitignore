@@ -40,4 +40,5 @@ Thumbs.db
 *.pt
 *.pth
 models/
+!p1-personal-tutor/models/
 artifacts/
