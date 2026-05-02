@@ -1,104 +1,389 @@
 # Personal Learning Tutor (P1)
-> An AI-powered Socratic tutor that adapts to your learning style and remembers your progress across sessions.
+> An AI-powered Socratic tutor that adapts to your learning style per topic, tracks quiz performance, and maintains conversation memory across sessions.
 
 ## What it does
-P1 is a conversational learning assistant that teaches concepts through questions rather than lectures. It generates personalized syllabi, runs Socratic teaching sessions, tracks knowledge gaps, and resurfaces weak concepts using spaced repetition. It also translates complex outputs from other AI agents into plain English based on what you already know.
+P1 is a conversational learning assistant that teaches through questions rather than lectures. It builds personalized syllabi, runs Socratic teaching sessions, quizzes you on material, and automatically infers your preferred learning style by analyzing how you ask questions. When you struggle with a topic, it remembers—and adjusts its teaching approach accordingly.
 
 ## Why it exists
-This is the first project in a 5-project AI portfolio system. P1 serves as the "natural language interface" for the entire system—when other agents (financial analyzers, optimizers, LSTM models) produce structured outputs, P1 translates them into explanations anchored to the learner's existing knowledge. It's both a standalone learning tool and the human-facing layer for a multi-agent financial AI system.
+This is the first project in a 5-project AI portfolio system. P1 serves as the "natural language interface" for the entire system—when other agents (financial analyzers, optimizers, LSTM models) produce structured outputs, P1 translates them into explanations anchored to what you already know. It's both a standalone learning tool and the human-facing layer for a multi-agent financial AI system.
 
-## Architecture
+## System flow
 
-### Key components
-
-**app.py** — Streamlit chat interface. Handles message display, user input, and orchestrates the conversation loop. Loads memory on startup, persists after each exchange.
-
-**config/prompts.py** — Contains the system prompt defining P1's personality and pedagogy. Includes two modes: TEACH MODE (generating syllabi, running Socratic sessions) and EXPLAIN MODE (translating structured agent outputs). The prompt encodes specific pedagogical principles like "retrieval over recognition" and "problem first."
-
-**memory/memory_manager.py** — Persistence layer using LangChain's ConversationSummaryBufferMemory. Stores both a running summary of older context and recent message history to a JSON file. This lets conversations resume across sessions without exploding token costs.
-
-### Data flow
-1. User sends message via Streamlit chat input
-2. Memory manager loads conversation history (summary + recent messages)
-3. System prompt + history + new message sent to GPT-4o
-4. Response displayed and both sides saved to memory
-5. Memory persisted to JSON for next session
-
-### Design decisions
-- **JSON file storage** — SQLite would be overkill for single-user local development. JSON is human-readable for debugging and trivial to implement.
-- **ConversationSummaryBufferMemory** — Hybrid approach: keeps recent messages verbatim for accuracy, summarizes older context to stay within token limits. Better than pure buffer (loses old context) or pure summary (loses recent detail).
-- **GPT-4o with temperature 0.7** — Needs to be smart enough for Socratic questioning but creative enough to generate varied teaching approaches.
-
-## Tech stack
-- `streamlit` — Fastest way to build a chat UI without frontend code. Hot reload for rapid iteration.
-- `langchain` — Memory abstractions (ConversationSummaryBufferMemory) handle the hard parts of context management. Overkill for simple chat but essential for the memory system.
-- `langchain-openai` — Clean interface to OpenAI models with LangChain message types.
-- `python-dotenv` — Keep API keys out of code. Standard practice.
-- `openai` (via langchain-openai) — GPT-4o chosen for reasoning quality needed for Socratic teaching.
-
-## Key decisions
-
-**Hybrid memory over pure conversation buffer**
-- Decided: Use ConversationSummaryBufferMemory with 2000 token limit
-- Alternatives: Simple buffer (loses old context), full history (token explosion), vector retrieval (complexity overkill)
-- Why: Tutoring requires remembering what was taught weeks ago while keeping recent exchanges accurate. Summary handles the former, buffer handles the latter.
-
-**Single JSON file for persistence**
-- Decided: Store memory state in `session_memory.json`
-- Alternatives: SQLite, Redis, cloud database
-- Why: This is a single-user local tool. JSON is debuggable, portable, and has zero setup. Can upgrade later if needed.
-
-**System prompt encodes full pedagogy**
-- Decided: Put all teaching methodology in one large system prompt
-- Alternatives: Multiple smaller prompts, RAG over teaching principles
-- Why: The pedagogy is stable and needs to be applied consistently. One prompt means one source of truth. RAG would add latency and complexity for content that rarely changes.
-
-## How to run locally
-
-```bash
-# Clone and enter project
-cd p1-personal-tutor
-
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install streamlit langchain langchain-openai python-dotenv
-
-# Set up environment variables
-echo "OPENAI_API_KEY=your-key-here" > .env
-
-# Run the app
-streamlit run app.py
 ```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  FLOW 1: App Startup                                                        │
+└─────────────────────────────────────────────────────────────────────────────┘
+[streamlit run app.py]
+     │
+     ▼
+[load_dotenv()]  ───► READ  .env file (OPENAI_API_KEY)
+     │
+     ▼
+[st.set_page_config()]
+     │
+     ▼
+[@st.cache_resource get_llm()]
+     └─► Returns: ChatOpenAI(model="gpt-4o", temperature=0.7)
+     │
+     ▼
+[@st.cache_resource get_profile_store()]
+     └─► [ProfileStore.__init__()]
+              └─► [_init_table()]  ───► WRITE  SQLite data/tutor.db
+                       └─► CREATE TABLE IF NOT EXISTS user_profile
+     │
+     ▼
+[@st.cache_resource get_score_tracker()]
+     └─► [ScoreTracker.__init__()]  ───► WRITE  SQLite data/tutor.db
+              └─► CREATE TABLE IF NOT EXISTS quiz_scores
+     │
+     ▼
+? "memory" not in st.session_state
+     └─► YES: [load_memory(llm)]  ───► READ  memory/session_memory.json
+                   │
+                   ▼
+              ? file exists
+                   ├─► YES: json.load() → reconstruct SessionMemory
+                   │        from saved messages + summary
+                   └─► NO:  Return fresh SessionMemory(llm, max_tokens=2000)
+     │
+     ▼
+? "display_messages" not in st.session_state
+     └─► YES: Iterate memory.messages
+                   └─► Build list[tuple[str, str]] of (role, content)
+     │
+     ▼
+? "page" not in st.session_state
+     └─► [profile_store.load()]  ───► READ  SQLite user_profile
+              │
+              ▼
+         ? profile exists
+              ├─► YES: st.session_state.page = "chat"
+              └─► NO:  st.session_state.page = "profile_setup"
+     │
+     ▼
+[Render page based on st.session_state.page]
 
-App opens at `http://localhost:8501`
 
-## How to deploy
-[not yet built] — Cloud Run deployment planned. Will need to swap JSON persistence for Cloud Storage or Firestore.
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  FLOW 2: Profile Setup (First-time user)                                    │
+└─────────────────────────────────────────────────────────────────────────────┘
+[_render_profile_setup()]
+     │
+     ▼
+[st.form("profile_form")]
+     │
+     ├─► [st.selectbox("learning_style")]  → visual | auditory | reading | kinesthetic
+     ├─► [st.selectbox("preferred_pace")]  → slow | medium | fast
+     ├─► [st.selectbox("explanation_style")]  → analogies | step_by_step | examples_first | theory_first
+     ├─► [st.text_input("weak_topics")]  → comma-separated string
+     └─► [st.text_input("strong_topics")]  → comma-separated string
+     │
+     ▼
+[st.form_submit_button("Save Profile")]
+     │
+     ▼
+? form submitted
+     │
+     ▼
+[UserProfile(...)]  ← Pydantic model instantiation
+     │
+     ▼
+[profile_store.save(profile)]  ───► WRITE  SQLite user_profile
+     │                                     (INSERT ... ON CONFLICT UPDATE)
+     ▼
+[st.session_state.page = "chat"]
+     │
+     ▼
+[st.rerun()]
 
-## Project status
 
-**Working:**
-- Chat interface with message history display
-- GPT-4o integration with full system prompt
-- Session memory that persists across restarts
-- Summary buffer to manage long conversations
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  FLOW 3: User sends a chat message                                          │
+└─────────────────────────────────────────────────────────────────────────────┘
+[User types in st.chat_input("Message P1...")]
+     │
+     ▼
+[st.session_state.turn_count += 1]
+     │
+     ▼
+[st.session_state.display_messages.append(("user", user_input))]
+     │
+     ▼
+[st.session_state.memory.add_message("human", user_input)]
+     │
+     ▼
+[_get_system_prompt()]
+     │
+     ├─► [profile_store.load()]  ───► READ  SQLite user_profile
+     │        │
+     │        ▼
+     │   ? profile is None
+     │        ├─► YES: Return TUTOR_SYSTEM_PROMPT with placeholder text
+     │        └─► NO:  Continue to build_system_prompt
+     │
+     └─► [build_system_prompt(profile, topic)]
+              │
+              ├─► [_resolve_styles(profile, topic)]
+              │        │
+              │        ▼
+              │   ? topic is not None
+              │        └─► [profile.topic_styles.get(topic.lower().strip())]
+              │                 │
+              │                 ▼
+              │            ? TopicStyle exists for topic
+              │                 ├─► YES: Use topic overrides where non-None
+              │                 └─► NO:  Use global defaults only
+              │        │
+              │        ▼
+              │   Returns: (learning_style, pace, explanation_style, topic_style|None)
+              │
+              └─► [_render_profile_block(profile, topic)]
+                       │
+                       ▼
+                  Build multi-line string with:
+                       - Background: {profile.strong_topics}
+                       - Gaps: {profile.weak_topics}
+                       - Learning style: {resolved learning_style}
+                       - Pace: {resolved pace with _PACE_LABELS}
+                       - Explanation: {resolved explanation_style with _STYLE_LABELS}
+                       - ? topic_style exists: add confidence level
+                       │
+                       ▼
+                  Returns: str (profile block for system prompt)
+              │
+              ▼
+         [TUTOR_SYSTEM_PROMPT.replace("{learner_profile}", profile_block)]
+              │
+              ▼
+         Returns: str (complete system prompt)
+     │
+     ▼
+[Build messages list for LLM]
+     │
+     ├─► [SystemMessage(system_prompt)]
+     ├─► ? memory.running_summary not empty
+     │        └─► [SystemMessage(f"Conversation so far: {summary}")]
+     └─► [HumanMessage/AIMessage for each in memory.messages]
+              └─► Convert {"role": "human"/"ai", "content": ...} to LangChain types
+     │
+     ▼
+[llm.invoke(messages)]  ═══► OpenAI gpt-4o  (~1K–4K tokens)
+     │
+     ▼
+Returns: AIMessage with content
+     │
+     ▼
+[response_text = ai_message.content]
+     │
+     ▼
+[st.session_state.memory.add_message("ai", response_text)]
+     │
+     ▼
+[st.session_state.memory.maybe_summarize()]
+     │
+     ▼
+? total tokens in messages > max_tokens (2000)
+     ├─► NO:  Continue
+     └─► YES: [_summarize_messages(oldest_messages)]
+                   │
+                   ▼
+              Build summarization prompt with oldest messages
+                   │
+                   ▼
+              [llm.invoke([HumanMessage("Summarize...")])]  ═══► OpenAI gpt-4o
+                   │
+                   ▼
+              [memory.running_summary += new_summary]
+                   │
+                   ▼
+              Remove oldest messages from buffer
+     │
+     ▼
+[st.session_state.display_messages.append(("assistant", response_text))]
+     │
+     ▼
+[save_memory(st.session_state.memory)]  ───► WRITE  memory/session_memory.json
+     │                                              (atomic write via temp file)
+     ▼
+[_maybe_run_inference()]
+     │
+     ▼
+? _current_topic() is empty
+     └─► YES: Return (no inference without topic)
+     │
+     ▼
+? turn_count % _INFERENCE_EVERY_N_TURNS (3) != 0
+     └─► YES: Return (not time for inference yet)
+     │
+     ▼
+? len(memory.messages) < 4
+     └─► YES: Return (not enough conversation data)
+     │
+     ▼
+[infer_style(topic, recent_messages, llm)]
+     │
+     ▼
+     ┌────────────────────────────────────────────────┐
+     │  SUB-FLOW: Style Inference Chain               │
+     └────────────────────────────────────────────────┘
+     [build_style_inference_chain(llm)]
+          │
+          ├─► [PydanticOutputParser(pydantic_object=StyleSignal)]
+          │        └─► Generates format_instructions for JSON schema
+          │
+          └─► [ChatPromptTemplate.from_template(_INFERENCE_TEMPLATE)]
+                   │
+                   ▼
+              Chain: prompt | llm | parser
+          │
+          ▼
+     [format_conversation(messages[-6:])]  ← last 6 messages only
+          │
+          ▼
+     Returns: str ("Learner: ...\nTutor: ...\n...")
+          │
+          ▼
+     [chain.invoke({"topic": topic, "conversation": convo, 
+                    "format_instructions": ...})]
+          │
+          ▼
+     [ChatPromptTemplate.format()]
+          │
+          ▼
+     [llm.invoke(formatted_prompt)]  ═══► OpenAI gpt-4o  (~500–1K tokens)
+          │
+          ▼
+     Returns: AIMessage with JSON content
+          │
+          ▼
+     [PydanticOutputParser.parse(content)]
+          │
+          ▼
+     ? JSON valid and matches StyleSignal schema
+          ├─► YES: Returns: StyleSignal(pace, explanation_style, 
+          │                             learning_style, reasoning)
+          └─► NO:  Raises OutputParserException
+                        │
+                        ▼
+                   Caught by caller → inference silently discarded
+     │
+     ▼
+[_apply_inference(signal, topic)]
+     │
+     ▼
+[profile_store.load()]  ───► READ  SQLite user_profile
+     │
+     ▼
+[profile_store.update_topic_style(topic, signal)]
+     │
+     ├─► [_normalise_topic(topic)]  → lowercase, stripped
+     │
+     ├─► ? topic_style already exists for this topic
+     │        ├─► YES: [_merge_signal(existing_style, signal)]
+     │        │             │
+     │        │             ▼
+     │        │        For each dimension (pace, explanation_style, learning_style):
+     │        │             ? signal has non-None value
+     │        │                  └─► Update TopicStyle field
+     │        │             │
+     │        │             ▼
+     │        │        [observation_count += 1]
+     │        │             │
+     │        │             ▼
+     │        │        [confidence = min(1.0, count / _CONFIDENCE_SATURATION)]
+     │        │             └─► Saturation = 5 observations for 100% confidence
+     │        │
+     │        └─► NO:  Create new TopicStyle from signal with confidence = 0.2
+     │
+     └─► [profile_store.save(updated_profile)]  ───► WRITE  SQLite user_profile
+     │
+     ▼
+[st.session_state.last_inference = signal.reasoning]
+     │
+     ▼
+[st.rerun()]  ← Refresh UI to show updated inference status
 
-**In progress:**
-- Learner profile system (referenced in prompts but not yet populated)
-- Spaced repetition tracking (pedagogy defined, implementation pending)
 
-**Not started:**
-- Integration with other portfolio agents (P2-P5)
-- Knowledge gap database
-- Quiz and assessment system
-- Cloud deployment
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  FLOW 4: User clicks "Start Quiz" button                                    │
+└─────────────────────────────────────────────────────────────────────────────┘
+[st.sidebar button "Start Quiz"]
+     │
+     ▼
+? _current_topic() is empty
+     └─► YES: [st.warning("Set a topic first")]
+              └─► Return
+     │
+     ▼
+[st.session_state.quiz_saved = False]
+     │
+     ▼
+[Build quiz prompt]
+     │
+     ▼
+[_get_system_prompt()]  ← same as Flow 3
+     │
+     ▼
+[memory.add_message("human", f"Quiz me on {topic}. Ask 3-5 questions...")]
+     │
+     ▼
+[llm.invoke(messages)]  ═══► OpenAI gpt-4o
+     │
+     ▼
+[Display quiz questions in chat]
+     │
+     ▼
+[save_memory(memory)]  ───► WRITE  memory/session_memory.json
 
-## Part of a larger system
-P1 is the human interface layer for a 5-project AI portfolio:
-- **P1 (this project)** — Teaches concepts, explains outputs from other agents
-- **P2-P5** — [not yet built] Financial analysis agents that will send structured outputs to P1 for translation
 
-P1 has no upstream dependencies. All other projects will depend on P1 for user-facing explanations. The `EXPLAIN MODE` in the system prompt is specifically designed to receive structured JSON from other agents and translate it based on the learner's knowledge state.
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  FLOW 5: User clicks "Score Quiz" button                                    │
+└─────────────────────────────────────────────────────────────────────────────┘
+[st.sidebar button "Score Quiz"]
+     │
+     ▼
+? quiz_saved is True
+     └─► YES: [st.info("Quiz already scored")]
+              └─► Return
+     │
+     ▼
+[score_quiz(topic, memory.messages, llm)]
+     │
+     ▼
+     ┌────────────────────────────────────────────────┐
+     │  SUB-FLOW: Quiz Scoring Chain                  │
+     └────────────────────────────────────────────────┘
+     [build_quiz_scoring_chain(llm)]
+          │
+          ├─► [PydanticOutputParser(pydantic_object=QuizResult)]
+          │
+          ├─► [OutputFixingParser.from_llm(parser, llm)]
+          │        └─► Wraps primary parser with auto-repair on failure
+          │
+          └─► [ChatPromptTemplate.from_template(_SCORING_TEMPLATE)]
+          │
+          ▼
+     Chain: prompt | llm | fixing_parser
+          │
+          ▼
+     [format_conversation(messages)]
+          │
+          ▼
+     Returns: str ("Learner: ...\nTutor: ...\n...")
+          │
+          ▼
+     [chain.invoke({"topic": topic, "conversation": convo, 
+                    "today": date.today(), "format_instructions": ...})]
+          │
+          ▼
+     [llm.invoke(formatted_prompt)]  ═══► OpenAI gpt-4o  (~1K–2K tokens)
+          │
+          ▼
+     Returns: AIMessage with JSON content
+          │
+          ▼
+     [OutputFixingParser.parse(content)]
+          │
+          ▼
+     ? JSON valid
+          ├─

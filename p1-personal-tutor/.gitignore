@@ -4,3 +4,4 @@ __pycache__/
 memory/session_memory.json
 memory/conversations/
 data/
+*.tmp.*
