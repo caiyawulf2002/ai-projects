@@ -1,7 +1,8 @@
 """SQLite persistence for quiz scores.
 
 ScoreTracker appends a new row for every scored quiz session and exposes
-query helpers used by the sidebar to show recent performance.
+query helpers used by the sidebar to show recent performance.  All queries
+are scoped to the caller's session_id so sessions don't see each other's scores.
 """
 from __future__ import annotations
 
@@ -23,32 +24,46 @@ def _get_conn() -> sqlite3.Connection:
 
 
 class ScoreTracker:
-    """Persists and retrieves QuizResult records via SQLite."""
+    """Persists and retrieves QuizResult records via SQLite, scoped per session_id."""
 
     def __init__(self) -> None:
         self._init_table()
 
     def _init_table(self) -> None:
-        """Create the quiz_results table if it does not exist."""
+        """Create the quiz_results table and apply idempotent session_id migration.
+
+        New databases get the session_id column from the start.  Existing
+        databases receive it via ALTER TABLE with DEFAULT 'legacy' so old rows
+        are preserved and never surface for new sessions.
+        """
         with _get_conn() as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS quiz_results (
-                    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-                    topic     TEXT    NOT NULL,
-                    score     REAL    NOT NULL,
-                    date      TEXT    NOT NULL,
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id     TEXT    NOT NULL DEFAULT 'legacy',
+                    topic          TEXT    NOT NULL,
+                    score          REAL    NOT NULL,
+                    date           TEXT    NOT NULL,
                     question_count INTEGER NOT NULL,
-                    weak_areas TEXT   NOT NULL  -- JSON array
+                    weak_areas     TEXT    NOT NULL
                 )
                 """
             )
+            # Idempotent migration for existing DBs that lack the column.
+            try:
+                conn.execute(
+                    "ALTER TABLE quiz_results ADD COLUMN session_id TEXT NOT NULL DEFAULT 'legacy'"
+                )
+            except sqlite3.OperationalError:
+                pass  # column already exists
 
-    def save(self, result: QuizResult) -> None:
-        """Insert a new quiz result row.
+    def save(self, result: QuizResult, session_id: str) -> None:
+        """Insert a new quiz result row for the given session.
 
         Args:
-            result: Validated QuizResult from the scoring chain.
+            result:     Validated QuizResult from the scoring chain.
+            session_id: UUID identifying the browser session.
 
         Side effects:
             Writes to data/tutor.db.  weak_areas list is JSON-serialised.
@@ -56,10 +71,11 @@ class ScoreTracker:
         with _get_conn() as conn:
             conn.execute(
                 """
-                INSERT INTO quiz_results (topic, score, date, question_count, weak_areas)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO quiz_results (session_id, topic, score, date, question_count, weak_areas)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    session_id,
                     result.topic,
                     result.score,
                     result.date,
@@ -68,28 +84,30 @@ class ScoreTracker:
                 ),
             )
 
-    def load_all(self) -> list[QuizResult]:
-        """Return all quiz results, newest first."""
+    def load_all(self, session_id: str) -> list[QuizResult]:
+        """Return all quiz results for this session, newest first."""
         with _get_conn() as conn:
             rows = conn.execute(
-                "SELECT * FROM quiz_results ORDER BY date DESC"
+                "SELECT * FROM quiz_results WHERE session_id = ? ORDER BY date DESC",
+                (session_id,),
             ).fetchall()
         return [self._row_to_model(r) for r in rows]
 
-    def load_by_topic(self, topic: str) -> list[QuizResult]:
-        """Return all quiz results for a specific topic, newest first."""
+    def load_by_topic(self, topic: str, session_id: str) -> list[QuizResult]:
+        """Return all quiz results for a specific topic in this session, newest first."""
         with _get_conn() as conn:
             rows = conn.execute(
-                "SELECT * FROM quiz_results WHERE topic = ? ORDER BY date DESC",
-                (topic,),
+                "SELECT * FROM quiz_results WHERE session_id = ? AND topic = ? ORDER BY date DESC",
+                (session_id, topic),
             ).fetchall()
         return [self._row_to_model(r) for r in rows]
 
-    def load_recent(self, n: int = 10) -> list[QuizResult]:
-        """Return the n most recent quiz results, newest first."""
+    def load_recent(self, n: int, session_id: str) -> list[QuizResult]:
+        """Return the n most recent quiz results for this session, newest first."""
         with _get_conn() as conn:
             rows = conn.execute(
-                "SELECT * FROM quiz_results ORDER BY date DESC LIMIT ?", (n,)
+                "SELECT * FROM quiz_results WHERE session_id = ? ORDER BY date DESC LIMIT ?",
+                (session_id, n),
             ).fetchall()
         return [self._row_to_model(r) for r in rows]
 
