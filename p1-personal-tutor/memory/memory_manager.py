@@ -4,9 +4,9 @@ Implements a summary-buffer hybrid: recent exchanges are kept verbatim in
 memory.messages; once the buffer exceeds max_token_limit the oldest half is
 compressed into a running summary via an LLM call.
 
-Persistence layout:
-  memory/session_memory.json       — active session (overwritten each turn)
-  memory/conversations/<ts>.json   — archived past sessions
+Persistence layout (per session UUID):
+  memory/<session_id>/session_memory.json       — active session
+  memory/<session_id>/conversations/<ts>.json   — archived past sessions
 """
 import json
 from dataclasses import dataclass, field
@@ -15,18 +15,30 @@ from pathlib import Path
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
-MEMORY_DIR = Path(__file__).parent
-ACTIVE_PATH = MEMORY_DIR / "session_memory.json"
-CONVERSATIONS_DIR = MEMORY_DIR / "conversations"
+_MEMORY_BASE = Path(__file__).parent
+
+
+def _session_paths(session_id: str) -> tuple[Path, Path]:
+    """Return (active_path, conversations_dir) scoped to this session's UUID.
+
+    Args:
+        session_id: UUID string identifying the browser session.
+
+    Returns:
+        Tuple of (session_memory.json path, conversations/ directory path),
+        both rooted under memory/<session_id>/.
+    """
+    session_dir = _MEMORY_BASE / session_id
+    return session_dir / "session_memory.json", session_dir / "conversations"
 
 
 @dataclass
 class SessionMemory:
-    """
-    Summary-buffer hybrid memory. Keeps recent exchanges verbatim; once the
-    buffer exceeds max_token_limit, oldest messages are compressed into a
-    running summary via LLM call. Mirrors the behavior of the removed
-    LangChain ConversationSummaryBufferMemory.
+    """Summary-buffer hybrid memory.
+
+    Keeps recent exchanges verbatim; once the buffer exceeds max_token_limit,
+    oldest messages are compressed into a running summary via LLM call.
+    Mirrors the behaviour of the removed LangChain ConversationSummaryBufferMemory.
     """
     llm: ChatOpenAI
     max_token_limit: int = 2000
@@ -115,47 +127,54 @@ class SessionMemory:
 
 # ── persistence ────────────────────────────────────────────────────────────────
 
-def load_memory(llm: ChatOpenAI, max_token_limit: int = 2000) -> SessionMemory:
+def load_memory(llm: ChatOpenAI, session_id: str, max_token_limit: int = 2000) -> SessionMemory:
     """Load the active session from disk, or return a fresh SessionMemory.
 
     Args:
         llm:             ChatOpenAI instance attached to the SessionMemory.
+        session_id:      UUID identifying the browser session.
         max_token_limit: Token budget before the buffer is compressed.
 
     Returns:
-        Reconstructed SessionMemory if session_memory.json exists, else empty.
+        Reconstructed SessionMemory if the session file exists, else empty.
     """
-    if ACTIVE_PATH.exists():
-        data = json.loads(ACTIVE_PATH.read_text())
+    active_path, _ = _session_paths(session_id)
+    if active_path.exists():
+        data = json.loads(active_path.read_text())
         return SessionMemory.from_dict(data, llm, max_token_limit)
     return SessionMemory(llm=llm, max_token_limit=max_token_limit)
 
 
-def save_memory(memory: SessionMemory) -> None:
-    """Overwrite session_memory.json with the current state of memory.
+def save_memory(memory: SessionMemory, session_id: str) -> None:
+    """Overwrite the session's active memory file with the current state.
 
     Args:
-        memory: The active SessionMemory to persist.
+        memory:     The active SessionMemory to persist.
+        session_id: UUID identifying the browser session.
     """
-    ACTIVE_PATH.write_text(json.dumps(memory.to_dict(), indent=2))
+    active_path, _ = _session_paths(session_id)
+    active_path.parent.mkdir(parents=True, exist_ok=True)
+    active_path.write_text(json.dumps(memory.to_dict(), indent=2))
 
 
-def archive_and_reset(memory: SessionMemory) -> None:
-    """Move the current session to conversations/ and clear the active file.
+def archive_and_reset(memory: SessionMemory, session_id: str) -> None:
+    """Move the current session to the session's conversations/ dir and clear it.
 
     The archive filename is an ISO timestamp; the title is the first 80 chars
     of the first human message.  Does nothing if the session has no messages.
 
     Args:
-        memory: The SessionMemory to archive.
+        memory:     The SessionMemory to archive.
+        session_id: UUID identifying the browser session.
 
     Side effects:
-        Writes a new file under memory/conversations/ and clears
-        memory/session_memory.json.
+        Writes a new file under memory/<session_id>/conversations/ and clears
+        memory/<session_id>/session_memory.json.
     """
     if not memory.messages:
         return
-    CONVERSATIONS_DIR.mkdir(exist_ok=True)
+    active_path, conversations_dir = _session_paths(session_id)
+    conversations_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
     first_human = next((m["content"] for m in memory.messages if m["role"] == "human"), "Untitled")
     archive = {
@@ -164,21 +183,25 @@ def archive_and_reset(memory: SessionMemory) -> None:
         "created_at": datetime.now().isoformat(),
         **memory.to_dict(),
     }
-    (CONVERSATIONS_DIR / f"{timestamp}.json").write_text(json.dumps(archive, indent=2))
-    ACTIVE_PATH.write_text(json.dumps({"summary": "", "messages": []}, indent=2))
+    (conversations_dir / f"{timestamp}.json").write_text(json.dumps(archive, indent=2))
+    active_path.write_text(json.dumps({"summary": "", "messages": []}, indent=2))
 
 
-def list_conversations() -> list[dict]:
-    """Return metadata for all archived conversations, newest first.
+def list_conversations(session_id: str) -> list[dict]:
+    """Return metadata for this session's archived conversations, newest first.
+
+    Args:
+        session_id: UUID identifying the browser session.
 
     Returns:
         List of dicts with keys: id, title, created_at.  Malformed files are
-        silently skipped.
+        silently skipped.  Only this session's conversations are returned.
     """
-    if not CONVERSATIONS_DIR.exists():
+    _, conversations_dir = _session_paths(session_id)
+    if not conversations_dir.exists():
         return []
     results = []
-    for f in sorted(CONVERSATIONS_DIR.glob("*.json"), reverse=True):
+    for f in sorted(conversations_dir.glob("*.json"), reverse=True):
         try:
             data = json.loads(f.read_text())
             results.append({"id": data["id"], "title": data["title"], "created_at": data["created_at"]})
@@ -187,22 +210,24 @@ def list_conversations() -> list[dict]:
     return results
 
 
-def load_conversation(conv_id: str, llm: ChatOpenAI, max_token_limit: int = 2000) -> SessionMemory:
+def load_conversation(conv_id: str, llm: ChatOpenAI, session_id: str, max_token_limit: int = 2000) -> SessionMemory:
     """Load an archived conversation and make it the active session.
 
-    Copies the archive's messages and summary into session_memory.json so
-    subsequent saves preserve the loaded context.
+    Copies the archive's messages and summary into the session's active file
+    so subsequent saves preserve the loaded context.
 
     Args:
         conv_id:         Timestamp-based ID (filename stem) of the archive.
         llm:             ChatOpenAI instance for the reconstructed SessionMemory.
+        session_id:      UUID identifying the browser session.
         max_token_limit: Token budget for future compression.
 
     Returns:
         SessionMemory populated with the archived conversation.
     """
-    path = CONVERSATIONS_DIR / f"{conv_id}.json"
+    active_path, conversations_dir = _session_paths(session_id)
+    path = conversations_dir / f"{conv_id}.json"
     data = json.loads(path.read_text())
     memory = SessionMemory.from_dict(data, llm, max_token_limit)
-    ACTIVE_PATH.write_text(json.dumps(memory.to_dict(), indent=2))
+    active_path.write_text(json.dumps(memory.to_dict(), indent=2))
     return memory

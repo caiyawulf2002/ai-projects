@@ -6,6 +6,8 @@ conversation history, and topic-aware style inference.
 """
 from __future__ import annotations
 
+import uuid
+
 import streamlit as st
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -64,8 +66,12 @@ score_tracker = get_score_tracker()
 
 # ── session state init ─────────────────────────────────────────────────────────
 
+# session_id must be initialised first — all other state reads depend on it.
+if "session_id" not in st.session_state:
+    st.session_state.session_id: str = str(uuid.uuid4())
+
 if "memory" not in st.session_state:
-    st.session_state.memory: SessionMemory = load_memory(llm)
+    st.session_state.memory: SessionMemory = load_memory(llm, st.session_state.session_id)
 
 if "display_messages" not in st.session_state:
     st.session_state.display_messages: list[tuple[str, str]] = []
@@ -74,7 +80,9 @@ if "display_messages" not in st.session_state:
         st.session_state.display_messages.append((role, msg["content"]))
 
 if "page" not in st.session_state:
-    st.session_state.page = "chat" if profile_store.load() else "profile_setup"
+    st.session_state.page = (
+        "chat" if profile_store.load(st.session_state.session_id) else "profile_setup"
+    )
 
 if "quiz_saved" not in st.session_state:
     st.session_state.quiz_saved: bool = False
@@ -105,7 +113,7 @@ def _get_system_prompt() -> str:
     Returns:
         Fully rendered system prompt string.
     """
-    profile = profile_store.load()
+    profile = profile_store.load(st.session_state.session_id)
     topic = _current_topic() or None
     if profile is None:
         return TUTOR_SYSTEM_PROMPT.replace(
@@ -131,7 +139,7 @@ def _maybe_run_inference() -> None:
             messages=st.session_state.memory.messages,
             llm=llm,
         )
-        profile_store.update_topic_style(topic, signal)
+        profile_store.update_topic_style(topic, signal, st.session_state.session_id)
         # Store reasoning for sidebar display.
         st.session_state.last_inference = signal.reasoning
     except Exception:
@@ -161,7 +169,7 @@ def render_profile_setup(*, editing: bool = False) -> None:
         "and those override these defaults for that topic."
     )
 
-    existing = profile_store.load()
+    existing = profile_store.load(st.session_state.session_id)
 
     with st.form("profile_form"):
         learning_style = st.selectbox(
@@ -202,7 +210,7 @@ def render_profile_setup(*, editing: bool = False) -> None:
             strong_topics=existing.strong_topics if existing else [],
             topic_styles=existing.topic_styles if existing else {},
         )
-        profile_store.save(profile)
+        profile_store.save(profile, st.session_state.session_id)
         st.success("Profile saved!")
         st.session_state.page = "chat"
         st.rerun()
@@ -239,8 +247,8 @@ with st.sidebar:
     st.title("Conversations")
 
     if st.button("＋ New Chat", use_container_width=True):
-        archive_and_reset(st.session_state.memory)
-        st.session_state.memory = load_memory(llm)
+        archive_and_reset(st.session_state.memory, st.session_state.session_id)
+        st.session_state.memory = load_memory(llm, st.session_state.session_id)
         st.session_state.display_messages = []
         st.session_state.quiz_saved = False
         st.session_state.turn_count = 0
@@ -289,12 +297,12 @@ with st.sidebar:
                             messages=st.session_state.memory.messages,
                             llm=llm,
                         )
-                        score_tracker.save(result)
+                        score_tracker.save(result, st.session_state.session_id)
 
                         if result.score < 70:
-                            profile_store.add_weak_topic(result.topic)
+                            profile_store.add_weak_topic(result.topic, st.session_state.session_id)
                         else:
-                            profile_store.add_strong_topic(result.topic)
+                            profile_store.add_strong_topic(result.topic, st.session_state.session_id)
 
                         st.session_state.quiz_saved = True
                         st.success(f"Score: **{result.score:.0f}%** on *{result.topic}*")
@@ -305,7 +313,7 @@ with st.sidebar:
 
     # ── recent scores ──────────────────────────────────────────────────────────
     with st.expander("🏆 Recent Scores", expanded=False):
-        recent = score_tracker.load_recent(5)
+        recent = score_tracker.load_recent(5, st.session_state.session_id)
         if not recent:
             st.caption("No quiz scores yet.")
         else:
@@ -316,7 +324,7 @@ with st.sidebar:
     st.divider()
 
     # ── conversation history ───────────────────────────────────────────────────
-    past = list_conversations()
+    past = list_conversations(st.session_state.session_id)
     if not past:
         st.caption("No past conversations yet.")
     else:
@@ -324,7 +332,9 @@ with st.sidebar:
             dt = conv["created_at"][:10]
             label = f"{dt} — {conv['title'][:40]}{'…' if len(conv['title']) > 40 else ''}"
             if st.button(label, key=conv["id"], use_container_width=True):
-                st.session_state.memory = load_conversation(conv["id"], llm)
+                st.session_state.memory = load_conversation(
+                    conv["id"], llm, st.session_state.session_id
+                )
                 st.session_state.display_messages = []
                 for msg in st.session_state.memory.messages:
                     role = "user" if msg["role"] == "human" else "assistant"
@@ -336,7 +346,7 @@ with st.sidebar:
 # ── page router ────────────────────────────────────────────────────────────────
 
 if st.session_state.page == "profile_setup":
-    render_profile_setup(editing=profile_store.load() is not None)
+    render_profile_setup(editing=profile_store.load(st.session_state.session_id) is not None)
     st.stop()
 
 # ── main chat area ─────────────────────────────────────────────────────────────
@@ -344,7 +354,7 @@ if st.session_state.page == "profile_setup":
 st.title("Personal Learning Tutor")
 
 # Profile summary — shows effective (resolved) styles for the current topic.
-profile = profile_store.load()
+profile = profile_store.load(st.session_state.session_id)
 if profile:
     topic = _current_topic()
     ts = profile.topic_styles.get(topic.lower().strip()) if topic else None
@@ -398,7 +408,7 @@ if prompt := st.chat_input("Ask me to teach you something…"):
 
     st.session_state.display_messages.append(("assistant", response.content))
     st.session_state.memory.save_context(prompt, response.content)
-    save_memory(st.session_state.memory)
+    save_memory(st.session_state.memory, st.session_state.session_id)
 
     # Increment turn counter and run inference if due.
     st.session_state.turn_count += 1
