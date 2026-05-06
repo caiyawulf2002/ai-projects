@@ -1,3 +1,13 @@
+"""Conversation memory management for P1.
+
+Implements a summary-buffer hybrid: recent exchanges are kept verbatim in
+memory.messages; once the buffer exceeds max_token_limit the oldest half is
+compressed into a running summary via an LLM call.
+
+Persistence layout:
+  memory/session_memory.json       — active session (overwritten each turn)
+  memory/conversations/<ts>.json   — archived past sessions
+"""
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -24,13 +34,20 @@ class SessionMemory:
     messages: list[dict] = field(default_factory=list)  # {"role": "human"|"ai", "content": str}
 
     def _estimate_tokens(self) -> int:
+        """Rough token estimate: (summary chars + all message chars) / 4."""
         total = len(self.summary)
         for m in self.messages:
             total += len(m["content"])
         return total // 4  # rough 4-chars-per-token estimate
 
     def _summarize_oldest(self) -> None:
-        """Compress the oldest half of the buffer into the running summary."""
+        """Compress the oldest half of the buffer into the running summary.
+
+        Makes one LLM call to produce a concise summary of the oldest half of
+        self.messages, appends it to self.summary, and drops those messages
+        from the buffer.  The LLM is given the existing summary as context so
+        the new summary is cumulative, not a replacement.
+        """
         half = len(self.messages) // 2
         to_compress = self.messages[:half]
         self.messages = self.messages[half:]
@@ -49,6 +66,15 @@ class SessionMemory:
         self.summary = result.content
 
     def save_context(self, user_input: str, ai_output: str) -> None:
+        """Append a user/assistant exchange and compress if over the token limit.
+
+        Args:
+            user_input: The raw user message text.
+            ai_output:  The assistant reply text.
+
+        Side effects:
+            May trigger an LLM call to summarise overflow messages.
+        """
         self.messages.append({"role": "human", "content": user_input})
         self.messages.append({"role": "ai", "content": ai_output})
         if self._estimate_tokens() > self.max_token_limit:
@@ -67,10 +93,18 @@ class SessionMemory:
         return result
 
     def to_dict(self) -> dict:
+        """Serialise to a JSON-compatible dict (summary + messages)."""
         return {"summary": self.summary, "messages": self.messages}
 
     @classmethod
     def from_dict(cls, data: dict, llm: ChatOpenAI, max_token_limit: int = 2000) -> "SessionMemory":
+        """Reconstruct a SessionMemory from a previously serialised dict.
+
+        Args:
+            data:            Dict with 'summary' and 'messages' keys.
+            llm:             ChatOpenAI instance for future compression calls.
+            max_token_limit: Token threshold before compression triggers.
+        """
         return cls(
             llm=llm,
             max_token_limit=max_token_limit,
@@ -82,6 +116,15 @@ class SessionMemory:
 # ── persistence ────────────────────────────────────────────────────────────────
 
 def load_memory(llm: ChatOpenAI, max_token_limit: int = 2000) -> SessionMemory:
+    """Load the active session from disk, or return a fresh SessionMemory.
+
+    Args:
+        llm:             ChatOpenAI instance attached to the SessionMemory.
+        max_token_limit: Token budget before the buffer is compressed.
+
+    Returns:
+        Reconstructed SessionMemory if session_memory.json exists, else empty.
+    """
     if ACTIVE_PATH.exists():
         data = json.loads(ACTIVE_PATH.read_text())
         return SessionMemory.from_dict(data, llm, max_token_limit)
@@ -89,10 +132,27 @@ def load_memory(llm: ChatOpenAI, max_token_limit: int = 2000) -> SessionMemory:
 
 
 def save_memory(memory: SessionMemory) -> None:
+    """Overwrite session_memory.json with the current state of memory.
+
+    Args:
+        memory: The active SessionMemory to persist.
+    """
     ACTIVE_PATH.write_text(json.dumps(memory.to_dict(), indent=2))
 
 
 def archive_and_reset(memory: SessionMemory) -> None:
+    """Move the current session to conversations/ and clear the active file.
+
+    The archive filename is an ISO timestamp; the title is the first 80 chars
+    of the first human message.  Does nothing if the session has no messages.
+
+    Args:
+        memory: The SessionMemory to archive.
+
+    Side effects:
+        Writes a new file under memory/conversations/ and clears
+        memory/session_memory.json.
+    """
     if not memory.messages:
         return
     CONVERSATIONS_DIR.mkdir(exist_ok=True)
@@ -109,6 +169,12 @@ def archive_and_reset(memory: SessionMemory) -> None:
 
 
 def list_conversations() -> list[dict]:
+    """Return metadata for all archived conversations, newest first.
+
+    Returns:
+        List of dicts with keys: id, title, created_at.  Malformed files are
+        silently skipped.
+    """
     if not CONVERSATIONS_DIR.exists():
         return []
     results = []
@@ -122,6 +188,19 @@ def list_conversations() -> list[dict]:
 
 
 def load_conversation(conv_id: str, llm: ChatOpenAI, max_token_limit: int = 2000) -> SessionMemory:
+    """Load an archived conversation and make it the active session.
+
+    Copies the archive's messages and summary into session_memory.json so
+    subsequent saves preserve the loaded context.
+
+    Args:
+        conv_id:         Timestamp-based ID (filename stem) of the archive.
+        llm:             ChatOpenAI instance for the reconstructed SessionMemory.
+        max_token_limit: Token budget for future compression.
+
+    Returns:
+        SessionMemory populated with the archived conversation.
+    """
     path = CONVERSATIONS_DIR / f"{conv_id}.json"
     data = json.loads(path.read_text())
     memory = SessionMemory.from_dict(data, llm, max_token_limit)

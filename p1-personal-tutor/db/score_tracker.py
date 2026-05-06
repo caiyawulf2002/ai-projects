@@ -1,3 +1,8 @@
+"""SQLite persistence for quiz scores.
+
+ScoreTracker appends a new row for every scored quiz session and exposes
+query helpers used by the sidebar to show recent performance.
+"""
 from __future__ import annotations
 
 import json
@@ -10,6 +15,7 @@ _DB_PATH = Path(__file__).parent.parent / "data" / "tutor.db"
 
 
 def _get_conn() -> sqlite3.Connection:
+    """Open and return a SQLite connection to the shared tutor.db."""
     _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(_DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -23,6 +29,7 @@ class ScoreTracker:
         self._init_table()
 
     def _init_table(self) -> None:
+        """Create the quiz_results table if it does not exist."""
         with _get_conn() as conn:
             conn.execute(
                 """
@@ -38,6 +45,14 @@ class ScoreTracker:
             )
 
     def save(self, result: QuizResult) -> None:
+        """Insert a new quiz result row.
+
+        Args:
+            result: Validated QuizResult from the scoring chain.
+
+        Side effects:
+            Writes to data/tutor.db.  weak_areas list is JSON-serialised.
+        """
         with _get_conn() as conn:
             conn.execute(
                 """
@@ -54,6 +69,7 @@ class ScoreTracker:
             )
 
     def load_all(self) -> list[QuizResult]:
+        """Return all quiz results, newest first."""
         with _get_conn() as conn:
             rows = conn.execute(
                 "SELECT * FROM quiz_results ORDER BY date DESC"
@@ -61,6 +77,7 @@ class ScoreTracker:
         return [self._row_to_model(r) for r in rows]
 
     def load_by_topic(self, topic: str) -> list[QuizResult]:
+        """Return all quiz results for a specific topic, newest first."""
         with _get_conn() as conn:
             rows = conn.execute(
                 "SELECT * FROM quiz_results WHERE topic = ? ORDER BY date DESC",
@@ -69,6 +86,7 @@ class ScoreTracker:
         return [self._row_to_model(r) for r in rows]
 
     def load_recent(self, n: int = 10) -> list[QuizResult]:
+        """Return the n most recent quiz results, newest first."""
         with _get_conn() as conn:
             rows = conn.execute(
                 "SELECT * FROM quiz_results ORDER BY date DESC LIMIT ?", (n,)
@@ -77,6 +95,7 @@ class ScoreTracker:
 
     @staticmethod
     def _row_to_model(row: sqlite3.Row) -> QuizResult:
+        """Deserialise a sqlite3.Row into a QuizResult model."""
         return QuizResult(
             topic=row["topic"],
             score=row["score"],

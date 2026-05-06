@@ -81,6 +81,20 @@ def _resolve_styles(
 # ── rendering ──────────────────────────────────────────────────────────────────
 
 def _render_profile_block(profile: UserProfile, topic: str | None = None) -> str:
+    """Render the learner profile as a multi-line plain-text block for the LLM.
+
+    Resolves effective style values (topic override > global default), formats
+    them with human-readable label text, and appends a per-topic confidence
+    note when a topic override exists.
+
+    Args:
+        profile: Full UserProfile (global defaults + per-topic overrides).
+        topic:   Current topic, or None to use global defaults only.
+
+    Returns:
+        Multi-line string injected into the {learner_profile} slot of the
+        system prompt.
+    """
     ls, pace, es, ts = _resolve_styles(profile, topic)
 
     weak = (

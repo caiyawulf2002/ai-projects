@@ -1,3 +1,9 @@
+"""SQLite persistence for the learner's UserProfile.
+
+ProfileStore is a single-row store (id is always 1).  Per-topic style data is
+serialised as a JSON blob in the topic_styles column so no schema migration is
+needed when new topic keys are added.
+"""
 from __future__ import annotations
 
 import json
@@ -14,6 +20,11 @@ _CONFIDENCE_SATURATION = 5
 
 
 def _get_conn() -> sqlite3.Connection:
+    """Open and return a SQLite connection to the shared tutor.db.
+
+    Creates the data/ directory if it does not exist.  row_factory is set to
+    sqlite3.Row so columns can be accessed by name.
+    """
     _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(_DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -21,6 +32,7 @@ def _get_conn() -> sqlite3.Connection:
 
 
 def _normalise_topic(topic: str) -> str:
+    """Return a canonical topic key: lowercased and stripped of whitespace."""
     return topic.lower().strip()
 
 
@@ -31,6 +43,11 @@ class ProfileStore:
         self._init_table()
 
     def _init_table(self) -> None:
+        """Create the user_profile table and apply idempotent migrations.
+
+        Safe to call multiple times — the CREATE TABLE and ALTER TABLE
+        statements are both guarded against re-execution.
+        """
         with _get_conn() as conn:
             conn.execute(
                 """
@@ -56,6 +73,14 @@ class ProfileStore:
     # ── persistence ────────────────────────────────────────────────────────────
 
     def save(self, profile: UserProfile) -> None:
+        """Upsert the learner profile (id=1 is always the single row).
+
+        Args:
+            profile: The UserProfile to persist; replaces any existing row.
+
+        Side effects:
+            Writes to data/tutor.db.  topic_styles dict is JSON-serialised.
+        """
         serialised_topic_styles = json.dumps(
             {
                 topic: ts.model_dump()
@@ -88,6 +113,11 @@ class ProfileStore:
             )
 
     def load(self) -> UserProfile | None:
+        """Load the learner profile from SQLite.
+
+        Returns:
+            The stored UserProfile, or None if no profile has been saved yet.
+        """
         with _get_conn() as conn:
             row = conn.execute(
                 "SELECT * FROM user_profile WHERE id = 1"

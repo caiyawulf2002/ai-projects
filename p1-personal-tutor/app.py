@@ -1,3 +1,9 @@
+"""P1 — Personal Learning Tutor.
+
+Streamlit entry point.  Wires together the LLM, profile store, score tracker,
+and memory manager into a single-page chat app with a sidebar for quiz scoring,
+conversation history, and topic-aware style inference.
+"""
 from __future__ import annotations
 
 import streamlit as st
@@ -32,16 +38,23 @@ _INFERENCE_EVERY_N_TURNS = 3
 
 @st.cache_resource
 def get_llm() -> ChatOpenAI:
+    """Return a shared ChatOpenAI instance cached for the lifetime of the app process.
+
+    Uses gpt-4o at temperature 0.7 — high enough for natural Socratic dialogue
+    while keeping answers factually grounded.
+    """
     return ChatOpenAI(model="gpt-4o", temperature=0.7)
 
 
 @st.cache_resource
 def get_profile_store() -> ProfileStore:
+    """Return a shared ProfileStore, creating the SQLite schema on first call."""
     return ProfileStore()
 
 
 @st.cache_resource
 def get_score_tracker() -> ScoreTracker:
+    """Return a shared ScoreTracker, creating the SQLite schema on first call."""
     return ScoreTracker()
 
 
@@ -83,6 +96,15 @@ def _current_topic() -> str:
 
 
 def _get_system_prompt() -> str:
+    """Build the system prompt for the current turn.
+
+    Loads the learner profile from SQLite, resolves per-topic style overrides,
+    and injects the result into TUTOR_SYSTEM_PROMPT.  Falls back to a generic
+    no-profile prompt if the profile has not been created yet.
+
+    Returns:
+        Fully rendered system prompt string.
+    """
     profile = profile_store.load()
     topic = _current_topic() or None
     if profile is None:
@@ -119,6 +141,19 @@ def _maybe_run_inference() -> None:
 # ── profile setup page ─────────────────────────────────────────────────────────
 
 def render_profile_setup(*, editing: bool = False) -> None:
+    """Render the profile setup / edit page.
+
+    On first run (editing=False) the form is blank with sensible defaults.
+    When editing an existing profile the form is pre-populated and an
+    expandable section shows all per-topic styles inferred so far.
+
+    Args:
+        editing: True when the learner already has a profile and is updating it.
+
+    Side effects:
+        Saves the new UserProfile to SQLite on form submission and redirects
+        to the chat page via st.rerun().
+    """
     st.title("👤 Learner Profile Setup" if not editing else "⚙️ Edit Profile")
     st.caption(
         "These are your **global defaults** — the baseline the tutor uses for any topic. "
