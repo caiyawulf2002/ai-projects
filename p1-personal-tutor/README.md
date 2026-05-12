@@ -340,10 +340,21 @@ gcloud run deploy tutor-app \
   --region us-central1 \
   --allow-unauthenticated \
   --set-secrets OPENAI_API_KEY=OPENAI_API_KEY:latest \
-  --memory 512Mi
+  --memory 512Mi \
+  --min-instances 1
 ```
 
-`--source .` builds via Cloud Build using the project `Dockerfile`. `OPENAI_API_KEY` must already exist in Secret Manager. Live URL: https://tutor-app-474302100622.us-central1.run.app
+`--source .` builds via Cloud Build using the project `Dockerfile`. `OPENAI_API_KEY` must already exist in Secret Manager. `--min-instances 1` keeps one container warm so `/tmp` storage survives between user visits (avoids cold-start data loss). Live URL: https://tutor-app-474302100622.us-central1.run.app
+
+---
+
+## Known limitation — ephemeral storage on Cloud Run
+
+SQLite (`tutor.db`) and conversation JSON files live in `/tmp` on Cloud Run (set via `TUTOR_DB_PATH` and `TUTOR_MEMORY_PATH` env vars). Cloud Run's `/tmp` is **ephemeral**: it resets when the container is replaced (redeployment, scale-to-zero cold start). All user profiles, scores, and conversation history are lost on a cold start.
+
+**Deferred fix:** migrate storage to **GCS** (conversation JSON → `gs://` bucket) and **Cloud SQL** (SQLite → Cloud SQL Postgres). Both require IAM binding in Cloud Build. This is the correct next step before treating P1 as production-grade.
+
+**Current workaround:** set `--min-instances=1` on the Cloud Run service to keep one container warm and avoid cold starts between sessions. Costs ~$15/month.
 
 ---
 
@@ -352,13 +363,16 @@ gcloud run deploy tutor-app \
 | Component | Status | Notes |
 |---|---|---|
 | Streamlit UI + chat | 🟢 Complete | Deployed on Cloud Run |
-| Learner profile setup | 🟢 Complete | SQLite, per-session |
-| Conversation memory | 🟢 Complete | Summary-buffer hybrid, per-session JSON |
+| Learner profile setup | 🟢 Complete | SQLite, per-session UUID |
+| Conversation memory | 🟢 Complete | Summary-buffer hybrid, streamed output |
 | Quiz scoring chain | 🟢 Complete | GPT-4o + OutputFixingParser |
+| Quiz tab (MC + FR) | 🟢 Complete | Generate, grade, save scores |
 | Style inference chain | 🟢 Complete | Fires every 3 turns |
-| Adaptive system prompt | 🟢 Complete | Topic overrides + confidence labels |
-| Session isolation | 🟢 Complete | UUID-scoped SQLite + JSON |
+| Adaptive system prompt | 🟢 Complete | No intake repeat for returning users |
+| Socratic opener on revisit | 🟢 Complete | Fires when loading archived conversation with weak topics |
+| Session isolation | 🟢 Complete | UUID-scoped; memory+DB in `/tmp` on Cloud Run |
 | LangSmith tracing | 🔴 Not started | Add `LANGCHAIN_API_KEY` + `LANGCHAIN_PROJECT` env vars |
+| Persistent storage (GCS/Cloud SQL) | 🔴 Deferred | Required before treating as production-grade |
 | Explain mode (agent output) | 🔴 Not started | Receives structured output from P3/P4/P5 |
 
 ---

@@ -7,12 +7,13 @@ are scoped to the caller's session_id so sessions don't see each other's scores.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 
 from models.quiz_models import QuizResult
 
-_DB_PATH = Path(__file__).parent.parent / "data" / "tutor.db"
+_DB_PATH = Path(os.environ.get("TUTOR_DB_PATH", str(Path(__file__).parent.parent / "data" / "tutor.db")))
 
 
 def _get_conn() -> sqlite3.Connection:

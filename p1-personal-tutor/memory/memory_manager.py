@@ -9,13 +9,16 @@ Persistence layout (per session UUID):
   memory/<session_id>/conversations/<ts>.json   — archived past sessions
 """
 import json
+import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
-_MEMORY_BASE = Path(__file__).parent
+# TUTOR_MEMORY_PATH is set in Dockerfile to /tmp/tutor-memory so Cloud Run's
+# ephemeral /tmp (always writable) is used instead of the app image directory.
+_MEMORY_BASE = Path(os.environ.get("TUTOR_MEMORY_PATH", str(Path(__file__).parent)))
 
 
 def _session_paths(session_id: str) -> tuple[Path, Path]:

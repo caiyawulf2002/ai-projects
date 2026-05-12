@@ -12,7 +12,7 @@ established (high confidence) or still provisional (low confidence).
 """
 from __future__ import annotations
 
-from config.prompts import TUTOR_SYSTEM_PROMPT
+from config.prompts import TUTOR_SYSTEM_PROMPT_RETURNING as _PROMPT
 from models.style_models import TopicStyle
 from models.user_profile import UserProfile
 
@@ -51,7 +51,7 @@ def build_system_prompt(profile: UserProfile, topic: str | None = None) -> str:
         Fully rendered system prompt string ready to pass to the LLM.
     """
     profile_block = _render_profile_block(profile, topic)
-    return TUTOR_SYSTEM_PROMPT.replace("{learner_profile}", profile_block)
+    return _PROMPT.replace("{learner_profile}", profile_block)
 
 
 # ── resolution ─────────────────────────────────────────────────────────────────

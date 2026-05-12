@@ -7,13 +7,16 @@ migration is needed when new topic keys are added.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 
 from models.style_models import StyleSignal, TopicStyle
 from models.user_profile import UserProfile
 
-_DB_PATH = Path(__file__).parent.parent / "data" / "tutor.db"
+# TUTOR_DB_PATH is set in Dockerfile to /tmp/tutor-data/tutor.db so writes
+# go to Cloud Run's ephemeral /tmp rather than the read-only image filesystem.
+_DB_PATH = Path(os.environ.get("TUTOR_DB_PATH", str(Path(__file__).parent.parent / "data" / "tutor.db")))
 
 # After this many observations, confidence reaches 1.0.
 _CONFIDENCE_SATURATION = 5
