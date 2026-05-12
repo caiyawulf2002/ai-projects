@@ -8,8 +8,8 @@
 
 | Key | Value |
 |-----|-------|
-| Project ID | [UPDATE: run `gcloud projects list`] |
-| Project name | caiya-ai-projects (suggested) |
+| Project ID | ai-projects-494800 |
+| Project name | ai-projects |
 | Billing account | [UPDATE when created] |
 | Region (default) | us-central1 |
 | Zone (default) | us-central1-a |
@@ -24,9 +24,9 @@ scales to zero, Vertex AI charged per training job, Artifact Registry minimal).
 
 | Key | Value |
 |-----|-------|
-| Registry name | [UPDATE when created] |
-| Registry URL | [UPDATE: format is REGION-docker.pkg.dev/PROJECT_ID/REGISTRY_NAME] |
-| Repos | caiya-ai-projects |
+| Registry name | tutor-app |
+| Registry URL | us-central1-docker.pkg.dev/ai-projects-494800/tutor-app |
+| Repos | tutor-app, cloud-run-source-deploy |
 
 **Push an image:**
 ```bash
@@ -41,7 +41,7 @@ docker push REGISTRY_URL/IMAGE_NAME:TAG
 
 | Service | Project | URL | Status | Min instances |
 |---------|---------|-----|--------|---------------|
-| p1-tutor | P1 | [UPDATE when deployed] | 🔴 not deployed | 0 |
+| p1-tutor | P1 | https://tutor-app-474302100622.us-central1.run.app | 🟢 live | 0 |
 | p3-analyzer | P3 | [UPDATE when deployed] | 🔴 not deployed | 0 |
 | p3-xgboost-api | P3 | [UPDATE when deployed] | 🔴 not deployed | 0 |
 | p4-optimizer | P4 | [UPDATE when deployed] | 🔴 not deployed | 0 |
@@ -49,11 +49,11 @@ docker push REGISTRY_URL/IMAGE_NAME:TAG
 **Deploy a Cloud Run service:**
 ```bash
 gcloud run deploy SERVICE_NAME \
-  --image REGISTRY_URL/IMAGE_NAME:TAG \
+  --source . \
   --region us-central1 \
-  --platform managed \
   --allow-unauthenticated \
-  --set-secrets API_KEY=openai-api-key:latest
+  --port 8080 \
+  --set-secrets=OPENAI_API_KEY=OPENAI_API_KEY:latest
 ```
 
 ---
@@ -99,7 +99,7 @@ gcloud storage cp local_file.pdf gs://BUCKET_NAME/path/file.pdf
 
 | Secret name | What it stores | Projects that use it |
 |-------------|---------------|---------------------|
-| openai-api-key | OpenAI API key | P1, P2, P3, P4, P5 |
+| OPENAI_API_KEY | OpenAI API key | P1, P2, P3, P4, P5 |
 | tavily-api-key | Tavily search API key | P2 |
 | newsapi-key | NewsAPI key | P2 |
 | sendgrid-api-key | SendGrid email (P2 briefing) | P2 |
@@ -143,8 +143,8 @@ secret_value = response.payload.data.decode("UTF-8")
 
 | Service account | Roles | Used by |
 |----------------|-------|---------|
-| [UPDATE]-cloud-run-sa | roles/secretmanager.secretAccessor, roles/storage.objectAdmin | Cloud Run services |
-| [UPDATE]-functions-sa | roles/secretmanager.secretAccessor, roles/pubsub.publisher | Cloud Functions |
+| 474302100622-compute@developer.gserviceaccount.com | roles/artifactregistry.writer, roles/logging.logWriter, roles/storage.objectViewer, roles/secretmanager.secretAccessor | Cloud Run services |
+| 474302100622@cloudbuild.gserviceaccount.com | roles/storage.admin, roles/artifactregistry.writer | Cloud Build |
 
 **Principle of least privilege:** each service gets only the roles it needs.
 Do not use owner/editor roles for deployed services.

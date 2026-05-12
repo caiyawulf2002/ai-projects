@@ -15,16 +15,16 @@ tested on AAPL 10-K, XGBoost not yet trained" is a status.
 
 ## P1 — Personal Learning Tutor
 
-**Status:** 🟢 DEPLOYED — live on Cloud Run, OPENAI_API_KEY via Secret Manager
+**Status:** 🟢 LIVE on GCP Cloud Run
 **Ships:** Week 4 ✅
 **Branch:** `main` (commit 163b271)
 **Deploy target:** GCP Cloud Run ✅
 
 ```
 Local:   runnable — streamlit run p1-personal-tutor/app.py (set OPENAI_API_KEY)
-Docker:  image built and pushed to Artifact Registry
-GCP:     deployed on Cloud Run ✅
-GitHub:  README present, write-up committed
+Docker:  Dockerfile present, image built and pushed to Artifact Registry
+GCP:     🟢 LIVE — https://tutor-app-474302100622.us-central1.run.app
+GitHub:  README updated with live URL and architecture
 ```
 
 **What's built:**
@@ -42,8 +42,8 @@ GitHub:  README present, write-up committed
 | Quiz scoring chain (PydanticOutputParser + OutputFixingParser) | `chains/quiz_chain.py` | ✅ |
 | Style inference chain (runs every 3 turns, updates per-topic style) | `chains/style_inference_chain.py` | ✅ |
 | Adaptive prompt builder (global + per-topic style resolution) | `config/adaptive_prompt.py` | ✅ |
-| GCP Secret Manager for OPENAI_API_KEY | wired for Cloud Run prod | ✅ |
-| Cloud Run deployment | live | ✅ |
+| GCP Secret Manager for OPENAI_API_KEY | stored as OPENAI_API_KEY in Secret Manager, linked to Cloud Run | ✅ |
+| Cloud Run deployment | live at https://tutor-app-474302100622.us-central1.run.app | ✅ |
 | Prompt engineering experiments | `experiments/` | ✅ |
 | 4-pattern prompt comparison | `experiments/prompt_comparison.py` | ✅ |
 | 5-topic teaching quality audit | `experiments/tutor_topic_test.py` | ✅ |
@@ -51,11 +51,11 @@ GitHub:  README present, write-up committed
 | LangSmith tracing | not wired yet | 🔴 |
 
 **What's broken / blocked:**
+- Session isolation bug: SQLite DB at /app/data/ shared across all users. Tracked as GitHub issue. Fix: scope queries to st.session_state.session_id UUID.
 - LangSmith tracing not wired (LANGCHAIN_TRACING_V2 / LANGCHAIN_API_KEY not set)
-- `langchain-classic` package required for OutputFixingParser — already in venv,
-  ensure it's in requirements.txt for Docker
 
 **Last session notes:**
+- 2026-05-05: Deployed to GCP Cloud Run via gcloud run deploy --source. IAM grants required for compute and cloudbuild service accounts. OPENAI_API_KEY stored in Secret Manager. Session isolation bug identified — all users share same SQLite DB.
 - 2026-05-12: prompt engineering session — 4-pattern comparison on gross margin,
   5-topic audit found two bugs in `<explain_mode>`: (1) numbered steps leaking as
   output headers, (2) passive "want to see?" offer substituting for retrieval question.
@@ -67,11 +67,9 @@ GitHub:  README present, write-up committed
   handles existing databases on first boot
 
 **Next steps:**
-1. Wire LangSmith: LANGCHAIN_TRACING_V2=true, LANGCHAIN_PROJECT="p1-personal-tutor"
-2. Fix remaining prompt weakness: no problem-first opening (first sentence should name
-   the business decision, not the definition)
-3. Fix: DCF underscaffolded — add difficulty signal so model allocates depth by concept
-   complexity, not topic name length
+1. Fix session isolation: scope SQLite queries to st.session_state.session_id
+2. Wire LangSmith tracing
+3. Always use --set-secrets=OPENAI_API_KEY=OPENAI_API_KEY:latest in deploy command to prevent secret binding loss on new revisions
 
 ---
 
@@ -260,4 +258,5 @@ GitHub: no README yet (doc agent will generate)
 | Date | Projects touched | What was done | Who |
 |------|-----------------|---------------|-----|
 | 2026-04-28 | personal-os | Full personal-os scaffold: db, tutor agent, tester agent, Textual CLI | Claude |
+| 2026-05-05 | P1 | GCP Cloud Run deployment: Artifact Registry, Cloud Build, Secret Manager, IAM grants, live URL verified. Session isolation bug identified. | Caiya + Claude |
 | —    | —               | Repo initialized | Caiya |
