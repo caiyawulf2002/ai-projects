@@ -3,23 +3,6 @@
 
 ---
 
-## Who I am + why this exists
-
-Industrial engineer + data scientist. Currently finishing a rotational consulting
-program at FORTNA (supply chain / automation). Background: Walmart process
-engineering, deep learning research, GenAI tools built at FORTNA.
-
-Long-term goal: C-suite / founder. Near-term goal: land an AI Product Manager or
-Solutions Engineer role at an early-stage AI company before rotation ends.
-
-These 5 projects are my proof of work. They are not toy demos. They are a
-coherent system — each one feeds the next. They ship on GCP, use real data,
-and are deployed with production patterns (Docker, Cloud Run, Vertex AI,
-monitoring). By end of Month 4 every project is live, documented, and
-demonstrable in an interview.
-
----
-
 ## The 5 projects — what they are and how they connect
 
 | ID  | Name                        | Ships   | Depends on         | Status       |

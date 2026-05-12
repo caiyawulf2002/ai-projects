@@ -15,16 +15,16 @@ tested on AAPL 10-K, XGBoost not yet trained" is a status.
 
 ## P1 — Personal Learning Tutor
 
-**Status:** 🟡 IN PROGRESS — core feature layer complete, not yet deployed
-**Ships:** Week 4
-**Branch:** `feature/pydantic-output-parsers` (commit f42d8be)
-**Deploy target:** GCP Cloud Run
+**Status:** 🟢 DEPLOYED — live on Cloud Run, OPENAI_API_KEY via Secret Manager
+**Ships:** Week 4 ✅
+**Branch:** `main` (commit 163b271)
+**Deploy target:** GCP Cloud Run ✅
 
 ```
 Local:   runnable — streamlit run p1-personal-tutor/app.py (set OPENAI_API_KEY)
-Docker:  Dockerfile present, image not yet built
-GCP:     not deployed
-GitHub:  README present
+Docker:  image built and pushed to Artifact Registry
+GCP:     deployed on Cloud Run ✅
+GitHub:  README present, write-up committed
 ```
 
 **What's built:**
@@ -42,30 +42,36 @@ GitHub:  README present
 | Quiz scoring chain (PydanticOutputParser + OutputFixingParser) | `chains/quiz_chain.py` | ✅ |
 | Style inference chain (runs every 3 turns, updates per-topic style) | `chains/style_inference_chain.py` | ✅ |
 | Adaptive prompt builder (global + per-topic style resolution) | `config/adaptive_prompt.py` | ✅ |
-| Feature notes doc | `FEATURE_NOTES.md` | ✅ |
+| GCP Secret Manager for OPENAI_API_KEY | wired for Cloud Run prod | ✅ |
+| Cloud Run deployment | live | ✅ |
+| Prompt engineering experiments | `experiments/` | ✅ |
+| 4-pattern prompt comparison | `experiments/prompt_comparison.py` | ✅ |
+| 5-topic teaching quality audit | `experiments/tutor_topic_test.py` | ✅ |
+| Prompt engineering write-up | `PROMPT_ENGINEERING_WRITEUP.md` | ✅ |
 | LangSmith tracing | not wired yet | 🔴 |
-| GCP Secret Manager for OPENAI_API_KEY | not wired yet | 🔴 |
-| Cloud Run deployment | not configured | 🔴 |
 
 **What's broken / blocked:**
-- OPENAI_API_KEY must be in p1-personal-tutor/.env to run locally
 - LangSmith tracing not wired (LANGCHAIN_TRACING_V2 / LANGCHAIN_API_KEY not set)
 - `langchain-classic` package required for OutputFixingParser — already in venv,
-  ensure it's installed before Docker build
+  ensure it's in requirements.txt for Docker
 
 **Last session notes:**
+- 2026-05-12: prompt engineering session — 4-pattern comparison on gross margin,
+  5-topic audit found two bugs in `<explain_mode>`: (1) numbered steps leaking as
+  output headers, (2) passive "want to see?" offer substituting for retrieval question.
+  Both fixed in config/prompts.py (both prompt variants). Cloud Run + Secret Manager
+  confirmed deployed.
 - 2026-04-30: full feature layer built and committed on feature/pydantic-output-parsers
 - OutputFixingParser lives in langchain_classic (not langchain) in v1.x stack
 - topic_styles stored as JSON TEXT in user_profile table; ALTER TABLE migration
   handles existing databases on first boot
-- Style inference fires every 3 turns silently — failure never breaks chat
 
 **Next steps:**
-1. Merge feature/pydantic-output-parsers → main
-2. Wire LangSmith: LANGCHAIN_TRACING_V2=true, LANGCHAIN_PROJECT="p1-personal-tutor"
-3. Docker build + test locally
-4. GCP: create project, Artifact Registry repo, push image, deploy Cloud Run
-5. Wire OPENAI_API_KEY via Secret Manager (not .env) for prod
+1. Wire LangSmith: LANGCHAIN_TRACING_V2=true, LANGCHAIN_PROJECT="p1-personal-tutor"
+2. Fix remaining prompt weakness: no problem-first opening (first sentence should name
+   the business decision, not the definition)
+3. Fix: DCF underscaffolded — add difficulty signal so model allocates depth by concept
+   complexity, not topic name length
 
 ---
 
