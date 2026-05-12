@@ -676,3 +676,378 @@ it shouldn't catch a Python package called `models/`.
 - The SQL in both modules is ANSI-compatible except for the upsert — Postgres
   uses the same `ON CONFLICT DO UPDATE` syntax so no changes needed there.
 - `sqlite3.Row` → `psycopg2.extras.RealDictRow` for named column access.
+
+---
+
+# P1 Feature Notes — Quiz Tab, Streaming, Socratic Opener & Cloud Run Fixes
+
+**Branch:** `feature/p1-quiz-tab-streaming-fixes`
+**Written:** 2026-05-11
+
+---
+
+## Table of Contents
+
+1. [New Pydantic Models](#1-new-pydantic-models)
+2. [Quiz Generation Chains](#2-quiz-generation-chains)
+3. [Free Response Grading Chain](#3-free-response-grading-chain)
+4. [Socratic Opener Chain](#4-socratic-opener-chain)
+5. [Streaming Chat Responses](#5-streaming-chat-responses)
+6. [Returning-User System Prompt](#6-returning-user-system-prompt)
+7. [Cloud Run Storage Fix](#7-cloud-run-storage-fix)
+8. [New Chat Button Fix](#8-new-chat-button-fix)
+9. [Quiz Tab UI State Machine](#9-quiz-tab-ui-state-machine)
+10. [Data Flow End-to-End](#10-data-flow-end-to-end)
+
+---
+
+## 1. New Pydantic Models
+
+Added to `models/quiz_models.py`. Three groups:
+
+**MC (Multiple Choice):**
+
+```python
+class MCOption(BaseModel):
+    key: Literal["A", "B", "C", "D"]
+    text: str
+
+class MCQuestion(BaseModel):
+    question: str
+    options: list[MCOption]   # min_length=4, max_length=4 enforced
+    correct_key: Literal["A", "B", "C", "D"]
+    explanation: str
+
+class MCQuiz(BaseModel):
+    topic: str
+    questions: list[MCQuestion]
+```
+
+`min_length=4, max_length=4` on `options` means Pydantic will reject any LLM
+response that doesn't provide exactly four options. The `OutputFixingParser`
+then asks the LLM to repair rather than silently accepting a malformed quiz.
+
+**FR (Free Response):**
+
+```python
+class FRQuestion(BaseModel):
+    question: str
+    key_concepts: list[str]   # min_length=2 — forces at least 2 grading anchors
+    sample_answer: str
+
+class FRQuiz(BaseModel):
+    topic: str
+    questions: list[FRQuestion]
+```
+
+`key_concepts` is the grading rubric. The `grade_fr_answer()` chain compares
+the learner's answer against these concepts explicitly, so grading is
+structured rather than vibes-based.
+
+**Grading:**
+
+```python
+class GradeResult(BaseModel):
+    score: float               # 0.0–1.0, ge/le enforced
+    feedback: str              # 1-2 sentences
+    matched_concepts: list[str]
+    missing_concepts: list[str]
+```
+
+`score` is in `[0, 1]` (not 0–100) so it's directly usable for averaging
+across questions without a division step.
+
+---
+
+## 2. Quiz Generation Chains
+
+`chains/quiz_generation_chain.py` — two LCEL chains, one per question type.
+
+```
+ChatPromptTemplate | llm | OutputFixingParser[MCQuiz | FRQuiz]
+```
+
+Both chains receive:
+- `topic` — subject to quiz on
+- `n_questions` — exact count (the prompt says "exactly N")
+- `learning_style` — from the learner's profile, so question framing matches
+  how they learn (e.g. a kinesthetic learner gets questions framed around what
+  something *does*, not what it *is*)
+- `weak_areas` — from the most recent `QuizResult` for this topic; the prompt
+  asks the LLM to prioritise these so the quiz targets actual gaps
+
+**Why `OutputFixingParser` here too?** Quiz generation is a larger JSON object
+than quiz scoring — more fields, more nesting, more opportunities for the LLM
+to drop a field or mis-type a key. The one-repair fallback is worth the extra
+LLM call on the rare failure.
+
+**Separate chains for MC and FR** (rather than a discriminated union) keeps the
+prompts tight and unambiguous. A single mixed-type prompt is harder for the LLM
+to follow reliably.
+
+---
+
+## 3. Free Response Grading Chain
+
+`chains/fr_grading_chain.py`
+
+```
+ChatPromptTemplate | llm | OutputFixingParser[GradeResult]
+```
+
+Inputs:
+- `question` — the original question
+- `key_concepts` — the rubric (from `FRQuestion.key_concepts`)
+- `sample_answer` — the gold standard (from `FRQuestion.sample_answer`)
+- `user_answer` — the learner's text
+
+The prompt instructs the LLM to grade **strictly against key_concepts**, not
+holistically. This prevents inflated scores from fluent but shallow answers.
+
+`matched_concepts` and `missing_concepts` are shown in the results expander
+so the learner sees exactly what they got right and what they missed — not just
+a number. This is more actionable than a percentage alone.
+
+---
+
+## 4. Socratic Opener Chain
+
+`chains/socratic_opener_chain.py`
+
+```
+ChatPromptTemplate | llm | StrOutputParser
+```
+
+Fires once when the user loads an **archived conversation** and their profile
+has `weak_topics`. The chain generates one retrieval question targeting the
+most specific concept from the first weak topic.
+
+**Why not `PydanticOutputParser`?** The output is a single sentence — there's
+no structure to validate. `StrOutputParser` returns the raw string, which is
+exactly what's needed.
+
+**Trigger mechanic in `app.py`:**
+
+1. Sidebar conversation button sets `st.session_state.pending_opener = True`
+2. After `st.rerun()`, the chat tab checks the flag on render
+3. If True: generates the opener, writes it to `display_messages` and
+   `memory.messages`, saves memory to disk, clears the flag
+4. The opener persists in the conversation as a regular AI message — if the
+   user replies, the tutor continues naturally
+
+The opener is generated in the main content area (not the sidebar) so the
+spinner appears where the user is looking.
+
+---
+
+## 5. Streaming Chat Responses
+
+Changed in `app.py`:
+
+```python
+# Before
+response = llm.invoke(messages)
+st.write(response.content)
+
+# After
+response_content: str = st.write_stream(
+    chunk.content for chunk in llm.stream(messages)
+)
+```
+
+`llm.stream()` returns a generator of `AIMessageChunk` objects. Each chunk's
+`.content` is a partial string. `st.write_stream()` accepts a generator of
+strings and renders them incrementally — first token appears in ~300ms,
+perceived latency drops significantly even though total generation time is
+the same.
+
+`st.write_stream()` returns the full accumulated string, which is stored in
+`response_content` and then saved to memory — same as before.
+
+**Why not streaming for quiz generation/grading?** Those chains use Pydantic
+parsers that require the full output before validation. Streaming is only
+appropriate when you can display partial content meaningfully.
+
+---
+
+## 6. Returning-User System Prompt
+
+Added `TUTOR_SYSTEM_PROMPT_RETURNING` to `config/prompts.py`.
+
+**Problem:** The original `TUTOR_SYSTEM_PROMPT` contains an `<intake_protocol>`
+block that says "On first session only, ask Q1–Q5". But the LLM has no
+persistent state — on every new chat (new `SessionMemory`), the conversation
+history is blank, which looks like a first session. So the tutor re-ran intake
+on every new topic or chat reset.
+
+**Fix:** Two prompt variants:
+- `TUTOR_SYSTEM_PROMPT` — includes `<intake_protocol>`. Used when no profile
+  exists (true first-time user).
+- `TUTOR_SYSTEM_PROMPT_RETURNING` — identical except the `<intake_protocol>`
+  block is replaced with: *"The learner has an established profile — do NOT run
+  intake. Jump straight into teaching."* Used by `build_system_prompt()` which
+  is only called when a profile exists.
+
+The profile's existence is the signal that intake is complete. No extra DB
+column or flag needed.
+
+---
+
+## 7. Cloud Run Storage Fix
+
+**Problem:** `_MEMORY_BASE` in `memory_manager.py` was `Path(__file__).parent`
+— inside the app's installed package directory. On Cloud Run, this directory
+may be part of the read-only container image layer. Write calls silently failed,
+meaning session files were never persisted. Because of this: (a) all users
+appeared to have the same empty state, and (b) the new chat button appeared
+broken because `load_memory` loaded stale data from a file that was never
+cleared.
+
+**Fix:** Both storage paths now read from environment variables with local
+fallbacks:
+
+```python
+# memory/memory_manager.py
+_MEMORY_BASE = Path(os.environ.get("TUTOR_MEMORY_PATH", str(Path(__file__).parent)))
+
+# db/profile_store.py + db/score_tracker.py
+_DB_PATH = Path(os.environ.get("TUTOR_DB_PATH", str(Path(__file__).parent.parent / "data" / "tutor.db")))
+```
+
+In `Dockerfile`:
+
+```dockerfile
+ENV TUTOR_DB_PATH=/tmp/tutor-data/tutor.db
+ENV TUTOR_MEMORY_PATH=/tmp/tutor-memory
+```
+
+`/tmp` is Cloud Run's guaranteed-writable ephemeral disk. The `_get_conn()`
+and `save_memory()` functions already call `mkdir(parents=True, exist_ok=True)`
+before writing, so `/tmp/tutor-data/` and `/tmp/tutor-memory/<uuid>/` are
+created on first use.
+
+**Trade-off:** `/tmp` is ephemeral — it resets on container replacement. This
+is documented in the README under "Known limitation." The proper fix is GCS
+(for JSON files) and Cloud SQL (for SQLite), deferred to a later milestone.
+`--min-instances 1` keeps one container warm to avoid cold-start data loss
+between user visits.
+
+---
+
+## 8. New Chat Button Fix
+
+Two root causes:
+
+**Cause 1 — Stale topic widget.** `st.text_input` with `key="current_topic_input"`
+persists its value in `st.session_state` across reruns. When "New Chat" was
+clicked, `display_messages` and `memory` were reset, but the topic input
+retained its old value. The system prompt on the next turn still referenced the
+old topic, making the chat feel stuck in the old context.
+
+**Fix:** Explicitly clear the widget value before rerun:
+
+```python
+st.session_state["current_topic_input"] = ""
+```
+
+**Cause 2 — Writes silently failing.** `archive_and_reset()` writes the cleared
+`session_memory.json`. If writes were going to a non-writable path (the image
+layer), the file was never cleared. `load_memory()` then read stale data and
+returned the old conversation. Fixed by the storage path change in §7.
+
+---
+
+## 9. Quiz Tab UI State Machine
+
+The quiz tab uses `st.session_state.quiz_phase` to drive a three-phase UI.
+Streamlit rerenders on every widget interaction, so state must live in
+`st.session_state` — not local variables.
+
+```
+"setup" ──(generate clicked)──► "in_progress" ──(last Q answered)──► "complete"
+   ▲                                   │                                   │
+   └──────────────(abandon)────────────┘           (New Quiz clicked) ─────┘
+```
+
+**State keys:**
+
+| Key | Type | Purpose |
+|---|---|---|
+| `quiz_phase` | str | Current phase |
+| `quiz_data` | MCQuiz \| FRQuiz | Generated quiz |
+| `quiz_type` | "mc" \| "fr" | Question type |
+| `quiz_q_idx` | int | Current question index |
+| `quiz_answers` | list | User's answers (one per question) |
+| `quiz_grade_results` | list | bool (MC) or GradeResult (FR) per question |
+
+**MC grading** is instant — no LLM call. `selected_key == q.correct_key` is
+evaluated in Python.
+
+**FR grading** fires one LLM call per answer (immediately on Submit). This
+means the learner gets feedback question-by-question rather than only at the
+end, which is more pedagogically useful.
+
+**Score saving** is explicit (a button click), not automatic. This lets the
+learner review results before committing them to their history — they might
+want to retake a poorly generated quiz without it hurting their record.
+
+---
+
+## 10. Data Flow End-to-End
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│ QUIZ TAB — GENERATION                                               │
+│                                                                     │
+│  user selects topic + question type + n_questions                   │
+│       │                                                             │
+│       └── generate_mc_quiz() or generate_fr_quiz()                  │
+│                │                                                    │
+│                ├── inject: topic, n, learning_style, weak_areas     │
+│                ├── ChatPromptTemplate → prompt                       │
+│                ├── llm.invoke(prompt) → raw str                     │
+│                ├── PydanticOutputParser[MCQuiz | FRQuiz]            │
+│                │        └── fail → OutputFixingParser → repair call  │
+│                └── MCQuiz | FRQuiz → st.session_state.quiz_data     │
+│                                                                     │
+│  quiz_phase = "in_progress" → st.rerun()                           │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ QUIZ TAB — ANSWERING                                                │
+│                                                                     │
+│  user submits answer                                                │
+│       │                                                             │
+│       ├── MC: selected_key == correct_key → bool saved              │
+│       └── FR: grade_fr_answer(question, key_concepts,               │
+│                    sample_answer, user_answer, llm)                 │
+│                │                                                    │
+│                ├── ChatPromptTemplate → grading prompt              │
+│                ├── llm.invoke() → raw str                           │
+│                └── PydanticOutputParser[GradeResult]                │
+│                         └── GradeResult saved to quiz_grade_results │
+│                                                                     │
+│  quiz_q_idx += 1 → st.rerun() (or quiz_phase = "complete")         │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ CHAT TAB — CONVERSATION REVISIT                                     │
+│                                                                     │
+│  user clicks archived conversation in sidebar                       │
+│       │                                                             │
+│       ├── load_conversation() → restores memory + display_messages  │
+│       ├── pending_opener = True (if weak_topics exist)              │
+│       └── st.rerun()                                                │
+│                                                                     │
+│  chat tab renders:                                                  │
+│       │                                                             │
+│       ├── display existing messages                                 │
+│       └── pending_opener == True?                                   │
+│                │                                                    │
+│                └── generate_socratic_opener(weak_topics, llm)       │
+│                         → single retrieval question string          │
+│                         → appended to display_messages + memory     │
+│                         → memory saved to disk                      │
+│                         → pending_opener = False                    │
+└─────────────────────────────────────────────────────────────────────┘
+```
