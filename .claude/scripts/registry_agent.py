@@ -155,6 +155,7 @@ Current registry.md:
 </registry>
 
 Instructions:
+- Update the second line of the file to: *Last updated: {today} | Updated by: Caiya + Claude*
 - Update the status block for each project listed under "Projects touched"
 - Update the Status line, the deployment table (Local/Docker/GCP/GitHub), and
   the "What's built" component table to reflect what was just committed
